@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 wee733
+# SPDX-License-Identifier: Apache-2.0
+
+format: isaac_grasp
+format_version: 1.0
+
+object_frame: /tagged_cube
+gripper_frame: /link6
+
+# Geometric seed grasps for a 50 mm cube. The ARX finger centre is assumed to
+# be 0.11 m along +X from link6. Validate these poses with the Grasp Editor and
+# a plan-only run before commanding hardware.
+grasps:
+  grasp_0:
+    confidence: 1.0
+    position: [-0.11, 0.0, 0.0]
+    orientation: {w: 1.0, xyz: [0.0, 0.0, 0.0]}
+    cspace_position: {joint7: 0.0}
+    pregrasp_cspace_position: {joint7: 0.044}
+  grasp_1:
+    confidence: 1.0
+    position: [0.0, -0.11, 0.0]
+    orientation: {w: 0.7071068, xyz: [0.0, 0.0, 0.7071068]}
+    cspace_position: {joint7: 0.0}
+    pregrasp_cspace_position: {joint7: 0.044}
+  grasp_2:
+    confidence: 1.0
+    position: [0.11, 0.0, 0.0]
+    orientation: {w: 0.0, xyz: [0.0, 0.0, 1.0]}
+    cspace_position: {joint7: 0.0}
+    pregrasp_cspace_position: {joint7: 0.044}
+  grasp_3:
+    confidence: 1.0
+    position: [0.0, 0.11, 0.0]
+    orientation: {w: 0.7071068, xyz: [0.0, 0.0, -0.7071068]}
+    cspace_position: {joint7: 0.0}
+    pregrasp_cspace_position: {joint7: 0.044}

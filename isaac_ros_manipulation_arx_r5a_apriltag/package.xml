@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>isaac_ros_manipulation_arx_r5a_apriltag</name>
+  <version>0.1.0</version>
+  <description>AprilTag-to-Isaac ROS Manipulation perception adapter for ARX R5A.</description>
+
+  <maintainer email="wee733@users.noreply.github.com">wee733</maintainer>
+  <license>Apache-2.0</license>
+  <url type="website">https://github.com/wee733/isaac_ros_manipulation_arx_r5a</url>
+  <url type="repository">https://github.com/wee733/isaac_ros_manipulation_arx_r5a</url>
+  <url type="bugtracker">https://github.com/wee733/isaac_ros_manipulation_arx_r5a/issues</url>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>isaac_ros_apriltag_interfaces</exec_depend>
+  <exec_depend>isaac_ros_manipulation_interfaces</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

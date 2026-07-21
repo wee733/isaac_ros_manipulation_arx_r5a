@@ -1,0 +1,25 @@
+repositories:
+  isaac_ros_apriltag:
+    type: git
+    url: https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_apriltag.git
+    version: 2b60eb9106a430c614355cd071858634430d7b2a
+  isaac_ros_image_pipeline:
+    type: git
+    url: https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pipeline.git
+    version: 4a5b55b86f9f102108b5ad167e07497af152a510
+  isaac_ros_cumotion:
+    type: git
+    url: https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_cumotion.git
+    version: 9a2630319e0551d8f5d3823c1495a7bab257d20b
+  isaac_ros_nvblox:
+    type: git
+    url: https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nvblox.git
+    version: f63c1dcae1f3c382196fe71427691caa1e1e9629
+  R5:
+    type: git
+    url: https://github.com/wee733/R5.git
+    version: f58330999779dc4c79907c8f73950311ca56f2b0
+  Isaac_Ros_CuMotion_ArxR5a:
+    type: git
+    url: https://github.com/wee733/Isaac_Ros_CuMotion_ArxR5a.git
+    version: v0.3.0

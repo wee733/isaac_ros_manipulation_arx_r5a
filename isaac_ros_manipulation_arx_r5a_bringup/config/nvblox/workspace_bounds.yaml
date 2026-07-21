@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 wee733
+# SPDX-License-Identifier: Apache-2.0
+
+/**:
+  ros__parameters:
+    static_mapper:
+      workspace_bounds_type: bounding_box
+      workspace_bounds_min_corner_x_m: -0.8
+      workspace_bounds_min_corner_y_m: -0.8
+      workspace_bounds_min_height_m: -0.2
+      workspace_bounds_max_corner_x_m: 0.8
+      workspace_bounds_max_corner_y_m: 0.8
+      workspace_bounds_max_height_m: 1.0

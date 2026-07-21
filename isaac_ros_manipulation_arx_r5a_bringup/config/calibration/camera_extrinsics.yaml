@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 wee733
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+
+# Set publish to true only after replacing the placeholder translation and
+# quaternion with a measured base_link -> camera_1_link transform.
+publish: false
+base_to_camera:
+  parent_frame: base_link
+  child_frame: camera_1_link
+  translation: [0.0, 0.0, 0.0]
+  rotation: [0.0, 0.0, 0.0, 1.0]

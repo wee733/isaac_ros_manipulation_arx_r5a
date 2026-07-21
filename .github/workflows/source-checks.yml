@@ -1,0 +1,29 @@
+name: source-checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python-and-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install flake8 pytest pyyaml
+      - run: >-
+          flake8
+          isaac_ros_manipulation_arx_r5a_apriltag
+          isaac_ros_manipulation_arx_r5a_bringup
+      - run: bash -n scripts/*.sh
+      - run: >-
+          PYTHONPATH=isaac_ros_manipulation_arx_r5a_apriltag:isaac_ros_manipulation_arx_r5a_bringup
+          pytest
+          isaac_ros_manipulation_arx_r5a_apriltag/test/test_observation_filter.py
+          isaac_ros_manipulation_arx_r5a_apriltag/test/test_pose_math.py
+          isaac_ros_manipulation_arx_r5a_apriltag/test/test_tag_config.py
+          isaac_ros_manipulation_arx_r5a_bringup/test/test_calibration_config.py
+          isaac_ros_manipulation_arx_r5a_bringup/test/test_repository_manifests.py
+          isaac_ros_manipulation_arx_r5a_bringup/test/test_workflow_contract.py

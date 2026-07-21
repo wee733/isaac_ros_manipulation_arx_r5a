@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>isaac_ros_manipulation_arx_r5a_bringup</name>
+  <version>0.1.0</version>
+  <description>Patch-free Isaac ROS Manipulation bringup for ARX R5A and AprilTag objects.</description>
+
+  <maintainer email="wee733@users.noreply.github.com">wee733</maintainer>
+  <license>Apache-2.0</license>
+  <url type="website">https://github.com/wee733/isaac_ros_manipulation_arx_r5a</url>
+  <url type="repository">https://github.com/wee733/isaac_ros_manipulation_arx_r5a</url>
+  <url type="bugtracker">https://github.com/wee733/isaac_ros_manipulation_arx_r5a/issues</url>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>isaac_ros_apriltag</exec_depend>
+  <exec_depend>isaac_ros_image_proc</exec_depend>
+  <exec_depend>isaac_ros_cumotion</exec_depend>
+  <exec_depend>isaac_ros_cumotion_object_attachment</exec_depend>
+  <exec_depend>isaac_ros_cumotion_robot_segmenter</exec_depend>
+  <exec_depend>isaac_ros_manipulation_arx_r5a_apriltag</exec_depend>
+  <exec_depend version_gte="0.3.0">isaac_ros_manipulation_arx_r5a_driver_utils</exec_depend>
+  <exec_depend version_gte="0.3.0">isaac_ros_manipulation_arx_r5a_robot_description</exec_depend>
+  <exec_depend>isaac_ros_manipulation_bringup</exec_depend>
+  <exec_depend>isaac_ros_manipulation_pick_and_place</exec_depend>
+  <exec_depend>isaac_ros_manipulation_servers</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>nvblox_examples_bringup</exec_depend>
+  <exec_depend>nvblox_ros</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>rclcpp_components</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
