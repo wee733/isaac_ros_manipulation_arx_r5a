@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from math import isfinite
 import os
 from threading import RLock
+from time import monotonic
 from typing import Dict, Tuple
 
 from geometry_msgs.msg import Pose
@@ -35,19 +36,24 @@ from isaac_ros_manipulation_interfaces.srv import (
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.clock import Clock, ClockType
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
 from std_msgs.msg import Header
+from tf2_ros import Buffer, TransformException, TransformListener
 from vision_msgs.msg import Detection2D, Detection3D, ObjectHypothesisWithPose
 
+from .frame_policy import resolve_pose_frame
 from .observation_filter import (
     axis_aligned_bbox,
     is_fresh,
     minimum_tag_edge_px,
     StablePoseFilter,
 )
-from .pose_math import compose_pose
+from .pose_math import compose_pose, transform_pose_to_target
+from .source_zone import AxisAlignedSourceZone
 from .tag_config import load_tag_map, TagMapConfig, TagObjectConfig
 
 
@@ -58,10 +64,13 @@ Quaternion = Tuple[float, float, float, float]
 
 @dataclass(frozen=True)
 class CachedObject:
-    """A stable object observation expressed in the configured camera frame."""
+    """A stable object observation with separate image and 3D pose frames."""
 
-    header: Header
+    image_header: Header
+    pose_header: Header
     source_stamp_ns: int
+    image_position: Vector3
+    image_orientation: Quaternion
     position: Vector3
     orientation: Quaternion
     corners: Tuple[Point2, Point2, Point2, Point2]
@@ -102,6 +111,9 @@ class AprilTagObjectServer(Node):
         self._expected_camera_frame = str(
             self.declare_parameter('expected_camera_frame', '').value
         ).strip()
+        output_frame = str(
+            self.declare_parameter('output_frame', '').value
+        ).strip()
         detections_topic = str(
             self.declare_parameter('detections_topic', '/tag_detections').value
         ).strip()
@@ -110,6 +122,21 @@ class AprilTagObjectServer(Node):
         ).strip()
         detection_topic = detection_topic_alias or detections_topic
         pose_ttl_sec = float(self.declare_parameter('pose_ttl_sec', 0.5).value)
+        future_tolerance_sec = float(
+            self.declare_parameter('future_tolerance_sec', 0.0).value
+        )
+        transform_timeout_sec = float(
+            self.declare_parameter('transform_timeout_sec', 0.1).value
+        )
+        source_zone_enabled = bool(
+            self.declare_parameter('source_zone_enabled', False).value
+        )
+        source_zone_min_xyz = self.declare_parameter(
+            'source_zone_min_xyz', [0.0, 0.0, 0.0]
+        ).value
+        source_zone_max_xyz = self.declare_parameter(
+            'source_zone_max_xyz', [0.0, 0.0, 0.0]
+        ).value
         min_stable_frames = int(self.declare_parameter('min_stable_frames', 5).value)
         min_tag_edge_px = float(self.declare_parameter('min_tag_edge_px', 40.0).value)
         max_translation_jump_m = float(
@@ -127,6 +154,10 @@ class AprilTagObjectServer(Node):
             raise ValueError('detection_topic must be non-empty')
         if not isfinite(pose_ttl_sec) or pose_ttl_sec <= 0.0:
             raise ValueError('pose_ttl_sec must be greater than zero')
+        if not isfinite(future_tolerance_sec) or future_tolerance_sec < 0.0:
+            raise ValueError('future_tolerance_sec must be non-negative')
+        if not isfinite(transform_timeout_sec) or transform_timeout_sec < 0.0:
+            raise ValueError('transform_timeout_sec must be non-negative')
         if min_stable_frames < 1:
             raise ValueError('min_stable_frames must be at least one')
         if not isfinite(min_tag_edge_px) or min_tag_edge_px <= 0.0:
@@ -136,8 +167,28 @@ class AprilTagObjectServer(Node):
         if not isfinite(max_rotation_jump_deg) or not 0.0 < max_rotation_jump_deg <= 180.0:
             raise ValueError('max_rotation_jump_deg must be in (0, 180]')
 
+        self._frame_policy = resolve_pose_frame(
+            self._expected_camera_frame,
+            output_frame,
+        )
+        self._source_zone = (
+            AxisAlignedSourceZone(source_zone_min_xyz, source_zone_max_xyz)
+            if source_zone_enabled else None
+        )
+        self._transform_timeout_sec = transform_timeout_sec
+        self._tf_buffer = (
+            Buffer(node=self) if self._frame_policy.transform_required else None
+        )
+        self._tf_listener = (
+            TransformListener(self._tf_buffer, self)
+            if self._tf_buffer is not None else None
+        )
+
         self._tag_map: TagMapConfig = load_tag_map(config_path)
         self._ttl_ns = int(pose_ttl_sec * 1_000_000_000)
+        self._future_tolerance_ns = int(
+            future_tolerance_sec * 1_000_000_000
+        )
         self._min_tag_edge_px = min_tag_edge_px
         self._pose_filter = StablePoseFilter(
             min_stable_frames=min_stable_frames,
@@ -151,6 +202,10 @@ class AprilTagObjectServer(Node):
         }
         self._lock = RLock()
         callback_group = ReentrantCallbackGroup()
+        self._queued_detection = None
+        self._pending_transform = None
+        self._pending_transform_started = None
+        self._transform_timeout_clock = Clock(clock_type=ClockType.STEADY_TIME)
 
         detection_qos = QoSProfile(
             depth=1,
@@ -163,6 +218,12 @@ class AprilTagObjectServer(Node):
             self._on_detections,
             detection_qos,
             callback_group=callback_group,
+        )
+        self._transform_timer = self.create_timer(
+            0.05,
+            self._expire_transform_request,
+            callback_group=callback_group,
+            clock=self._transform_timeout_clock,
         )
         self._get_objects_server = ActionServer(
             self,
@@ -203,8 +264,24 @@ class AprilTagObjectServer(Node):
 
         self.get_logger().info(
             f'Listening for {self._tag_map.tag_family} detections on {detection_topic}; '
-            f'expected camera frame is {self._expected_camera_frame}'
+            f'image frame is {self._frame_policy.image_frame}; '
+            f'pose output frame is {self._frame_policy.pose_frame}; '
+            f'timestamped TF is '
+            f'{"enabled" if self._frame_policy.transform_required else "not required"}'
         )
+        if self._frame_policy.transform_required:
+            self.get_logger().info(
+                'GetObjectPose has no Header; configure every consumer to interpret '
+                f'its result in {self._frame_policy.pose_frame!r}'
+            )
+        if self._source_zone is not None:
+            self.get_logger().info(
+                'Source-zone discovery gate enabled in '
+                f'{self._frame_policy.pose_frame!r}: '
+                f'min={self._source_zone.minimum}, '
+                f'max={self._source_zone.maximum}. '
+                'Only GetObjects is gated; GetObjectPose remains available.'
+            )
 
     @staticmethod
     def _default_metadata(config: TagObjectConfig) -> ObjectMetadata:
@@ -225,6 +302,87 @@ class AprilTagObjectServer(Node):
         self._pose_filter.reset(tag_id)
         self._objects.pop(tag_id, None)
 
+    def _start_transform_request(self) -> None:
+        """Wait asynchronously for the exact TF of the newest queued image."""
+        if self._tf_buffer is None:
+            return
+        with self._lock:
+            if self._pending_transform is not None or self._queued_detection is None:
+                return
+            message = self._queued_detection
+            self._queued_detection = None
+            try:
+                future = self._tf_buffer.wait_for_transform_async(
+                    target_frame=self._frame_policy.pose_frame,
+                    source_frame=message.header.frame_id,
+                    time=Time.from_msg(message.header.stamp),
+                )
+            except (TransformException, TypeError, ValueError) as error:
+                self.get_logger().warning(
+                    'Unable to queue timestamped AprilTag TF request: '
+                    f'target={self._frame_policy.pose_frame!r}, '
+                    f'source={message.header.frame_id!r}, '
+                    f'stamp={message.header.stamp.sec}.'
+                    f'{message.header.stamp.nanosec:09d}, '
+                    f'error={error}'
+                )
+                return
+            self._pending_transform = (future, message)
+            self._pending_transform_started = monotonic()
+        future.add_done_callback(self._on_transform_ready)
+
+    def _on_transform_ready(self, future) -> None:
+        with self._lock:
+            pending = self._pending_transform
+            if pending is None or pending[0] is not future:
+                return
+            _, message = pending
+            try:
+                if not future.cancelled():
+                    try:
+                        pose_transform = future.result()
+                    except (TransformException, TypeError, ValueError) as error:
+                        self.get_logger().warning(
+                            'Exact-time AprilTag TF request failed: '
+                            f'target={self._frame_policy.pose_frame!r}, '
+                            f'source={message.header.frame_id!r}, '
+                            f'stamp={message.header.stamp.sec}.'
+                            f'{message.header.stamp.nanosec:09d}, '
+                            f'error={error}'
+                        )
+                    else:
+                        # Keep ownership of the pending slot while filtering so a
+                        # newer immediately-available transform cannot overtake it.
+                        self._process_detections(message, pose_transform)
+            finally:
+                self._pending_transform = None
+                self._pending_transform_started = None
+        self._start_transform_request()
+
+    def _expire_transform_request(self) -> None:
+        """Drop one image if its exact TF cannot arrive within the deadline."""
+        with self._lock:
+            if (
+                self._pending_transform is None or
+                self._pending_transform_started is None or
+                monotonic() - self._pending_transform_started
+                <= self._transform_timeout_sec
+            ):
+                return
+            future, message = self._pending_transform
+            self._pending_transform = None
+            self._pending_transform_started = None
+        future.cancel()
+        self.get_logger().warning(
+            'Timed out waiting for exact-time AprilTag TF: '
+            f'target={self._frame_policy.pose_frame!r}, '
+            f'source={message.header.frame_id!r}, '
+            f'stamp={message.header.stamp.sec}.'
+            f'{message.header.stamp.nanosec:09d}, '
+            f'timeout={self._transform_timeout_sec:.3f}s'
+        )
+        self._start_transform_request()
+
     def _on_detections(self, message: AprilTagDetectionArray) -> None:
         if message.header.frame_id != self._expected_camera_frame:
             self.get_logger().error(
@@ -233,11 +391,39 @@ class AprilTagObjectServer(Node):
             )
             return
 
+        configured_detection_present = any(
+            int(detection.id) in self._tag_map.objects and
+            detection.family == self._tag_map.tag_family
+            for detection in message.detections
+        )
+        if not configured_detection_present:
+            return
+
+        if self._frame_policy.transform_required:
+            with self._lock:
+                self._queued_detection = message
+            self._start_transform_request()
+            return
+
+        self._process_detections(message, None)
+
+    def _process_detections(self, message, pose_transform) -> None:
+        """Validate and cache detections after their exact-time TF is ready."""
         source_stamp_ns = _stamp_to_nanoseconds(message.header)
         now_ns = self.get_clock().now().nanoseconds
-        if not is_fresh(source_stamp_ns, now_ns, self._ttl_ns):
+        if not is_fresh(
+            source_stamp_ns,
+            now_ns,
+            self._ttl_ns,
+            self._future_tolerance_ns,
+        ):
+            age_sec = (now_ns - source_stamp_ns) / 1_000_000_000.0
             self.get_logger().warning(
-                'Rejecting AprilTag array with an expired or future header timestamp'
+                'Rejecting AprilTag array with an expired or future header '
+                f'timestamp: age={age_sec:+.6f}s, '
+                f'ttl={self._ttl_ns / 1_000_000_000.0:.6f}s, '
+                'future_tolerance='
+                f'{self._future_tolerance_ns / 1_000_000_000.0:.6f}s'
             )
             return
 
@@ -265,7 +451,7 @@ class AprilTagObjectServer(Node):
 
                 tag_pose = detection.pose.pose.pose
                 try:
-                    object_position, object_orientation = compose_pose(
+                    image_position, image_orientation = compose_pose(
                         (
                             tag_pose.position.x,
                             tag_pose.position.y,
@@ -280,6 +466,25 @@ class AprilTagObjectServer(Node):
                         tag_config.tag_to_object_translation,
                         tag_config.tag_to_object_rotation,
                     )
+                    object_position = image_position
+                    object_orientation = image_orientation
+                    if pose_transform is not None:
+                        transform = pose_transform.transform
+                        object_position, object_orientation = transform_pose_to_target(
+                            (
+                                transform.translation.x,
+                                transform.translation.y,
+                                transform.translation.z,
+                            ),
+                            (
+                                transform.rotation.x,
+                                transform.rotation.y,
+                                transform.rotation.z,
+                                transform.rotation.w,
+                            ),
+                            object_position,
+                            object_orientation,
+                        )
                     update = self._pose_filter.update(
                         tag_id, object_position, object_orientation
                     )
@@ -295,9 +500,25 @@ class AprilTagObjectServer(Node):
                 if update.stable_pose is None:
                     continue
 
+                pose_header = deepcopy(message.header)
+                pose_header.frame_id = self._frame_policy.pose_frame
                 self._objects[tag_id] = CachedObject(
-                    header=deepcopy(message.header),
+                    image_header=deepcopy(message.header),
+                    pose_header=pose_header,
                     source_stamp_ns=source_stamp_ns,
+                    # A Detection2D hypothesis inherits the image header's
+                    # frame. Keep its current camera-relative pose alongside
+                    # the filtered pose used by Detection3D/GetObjectPose.
+                    image_position=(
+                        image_position
+                        if pose_transform is not None else
+                        update.stable_pose.position
+                    ),
+                    image_orientation=(
+                        image_orientation
+                        if pose_transform is not None else
+                        update.stable_pose.orientation
+                    ),
                     position=update.stable_pose.position,
                     orientation=update.stable_pose.orientation,
                     corners=corners,
@@ -307,7 +528,12 @@ class AprilTagObjectServer(Node):
         cached = self._objects.get(object_id)
         if cached is None:
             return None
-        if not is_fresh(cached.source_stamp_ns, now_ns, self._ttl_ns):
+        if not is_fresh(
+            cached.source_stamp_ns,
+            now_ns,
+            self._ttl_ns,
+            self._future_tolerance_ns,
+        ):
             self._invalidate_tag(object_id)
             return None
         return cached
@@ -315,12 +541,13 @@ class AprilTagObjectServer(Node):
     @staticmethod
     def _hypothesis(
         config: TagObjectConfig,
-        cached: CachedObject,
+        position: Vector3,
+        orientation: Quaternion,
     ) -> ObjectHypothesisWithPose:
         hypothesis = ObjectHypothesisWithPose()
         hypothesis.hypothesis.class_id = config.class_id
         hypothesis.hypothesis.score = config.confidence
-        hypothesis.pose.pose = _pose(cached.position, cached.orientation)
+        hypothesis.pose.pose = _pose(position, orientation)
         return hypothesis
 
     def _object_info(self, object_id: int, cached: CachedObject) -> ObjectInfo:
@@ -329,23 +556,31 @@ class AprilTagObjectServer(Node):
         x_min, y_min, x_max, y_max = axis_aligned_bbox(cached.corners)
 
         detection_2d = Detection2D()
-        detection_2d.header = deepcopy(cached.header)
+        detection_2d.header = deepcopy(cached.image_header)
         detection_2d.id = str(object_id)
         detection_2d.bbox.center.position.x = (x_min + x_max) / 2.0
         detection_2d.bbox.center.position.y = (y_min + y_max) / 2.0
         detection_2d.bbox.center.theta = 0.0
         detection_2d.bbox.size_x = x_max - x_min
         detection_2d.bbox.size_y = y_max - y_min
-        detection_2d.results.append(self._hypothesis(config, cached))
+        detection_2d.results.append(self._hypothesis(
+            config,
+            cached.image_position,
+            cached.image_orientation,
+        ))
 
         detection_3d = Detection3D()
-        detection_3d.header = deepcopy(cached.header)
+        detection_3d.header = deepcopy(cached.pose_header)
         detection_3d.id = str(object_id)
         detection_3d.bbox.center = _pose(cached.position, cached.orientation)
         detection_3d.bbox.size.x = config.dimensions[0]
         detection_3d.bbox.size.y = config.dimensions[1]
         detection_3d.bbox.size.z = config.dimensions[2]
-        detection_3d.results.append(self._hypothesis(config, cached))
+        detection_3d.results.append(self._hypothesis(
+            config,
+            cached.position,
+            cached.orientation,
+        ))
 
         object_info = ObjectInfo()
         object_info.object_id = object_id
@@ -362,7 +597,13 @@ class AprilTagObjectServer(Node):
         with self._lock:
             for object_id in sorted(self._objects):
                 cached = self._fresh_object(object_id, now_ns)
-                if cached is not None:
+                if (
+                    cached is not None and
+                    (
+                        self._source_zone is None or
+                        self._source_zone.contains(cached.position)
+                    )
+                ):
                     result.objects.append(self._object_info(object_id, cached))
         goal_handle.succeed()
         return result

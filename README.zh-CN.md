@@ -46,7 +46,7 @@ RealSense aligned depth + /joint_states
 
 - `isaac_ros_manipulation_arx_r5a_apriltag`
   - 订阅 `/tag_detections`；
-  - 对检测做连续帧、像素尺寸、位姿跳变和 TTL 过滤；
+  - 对检测做连续帧、像素尺寸、整窗平移/姿态离散度和 TTL 过滤；
   - 计算 `T_camera_object = T_camera_tag × T_tag_object`；
   - 输出官方行为树需要的感知 action/service。
 - `isaac_ros_manipulation_arx_r5a_bringup`
@@ -149,13 +149,21 @@ AprilTag 给出的是 tag 坐标系，不是物体 mesh 原点。以下三项必
 
 这是社区适配项目，仓库中的位姿只是标定种子，不能直接视为任意工作站的安全指令。
 实机必须准备急停，并按“感知-only → TF 检查 → plan-only → 夹爪单测 → 低速单次
-抓取 → 连续运行”的顺序推进。目前两个 ROS 包共有 21 项测试通过，并完成了伪造
-AprilTag 消息到物体 Action 的接口集成测试；碰撞几何、夹爪偏移和自动运动仍需在
-每套实体工作站上单独验收。
+抓取 → 连续运行”的顺序推进。两个包的测试套件覆盖 AprilTag 适配、launch/配置
+契约和 ROS lint。碰撞几何、夹爪偏移和自动运动仍需在每套实体工作站上单独验收。
 
-本版首先支持固定外置相机。眼在手上相机需要按检测时间戳查询 TF，而官方当前行为
-树按最新 TF 做相机到 base 的转换；机械臂运动中可能产生时序误差，因此暂不把它列为
-首个实机 demo。
+位姿适配器现在同时支持固定的眼在手外和随机械臂运动的眼在手上相机。配置
+不同的输出坐标系后，它会使用图像的原始时间戳查询 exact-time TF；如果该时刻
+的变换不可用就丢弃该帧，不会退回到“最新 TF”。由于 `GetObjectPose` 结果没有
+Header，`output_frame`（为空时就是相机坐标系）必须与行为树配置中的
+`behavior_tree_params.multi_object_pick_and_place.pose_estimation.camera_frame_id`
+完全一致；通用 launch 同时启动本适配器与编排器时会检查这一契约。眼在手上应
+使用相对规划世界固定的坐标系，通常就是 `base_link`。这套时间戳/坐标系策略已有
+源码和 launch 契约测试，但完整的实机 D455 眼在手上流程尚未验收。
+
+为保持参数兼容，`max_translation_jump_m` 和 `max_rotation_jump_deg` 的名字没有
+改变，但现在约束的是整个 `min_stable_frames` 窗口内任意两帧的最大平移/旋转
+离散度，而不只是相邻两帧；缓慢漂移也不能通过稳定性门控。
 
 ## 分阶段启动
 
@@ -215,6 +223,41 @@ ros2 action send_goal --feedback /multi_object_pick_and_place \
 
 推荐顺序：感知-only → TF/位姿检查 → cuMotion plan-only → 夹爪单测 → 低速单次抓放
 → 开启 nvblox → 连续任务。
+
+### 可选的源工位发现门控
+
+官方多物体行为树会持续发现下一件物体。对于“从源工位抓到目标工位”的流程，
+AprilTag 适配器可以只把 `/get_objects` 的发现结果限制在一个包含边界的 XYZ AABB
+内：
+
+下面的例子让适配器直接返回 `base_link` 位姿。请先复制仓库自带的行为树 YAML
+作为工作站专用配置，并把位姿输入坐标系同步改为：
+
+```yaml
+behavior_tree_params:
+  multi_object_pick_and_place:
+    pose_estimation:
+      base_frame_id: base_link
+      camera_frame_id: base_link
+```
+
+```bash
+ros2 launch isaac_ros_manipulation_arx_r5a_bringup \
+  arx_r5a_apriltag_pick_and_place.launch.py \
+  behavior_tree_config_file:=/absolute/path/to/base_frame_behavior_tree.yaml \
+  output_frame:=base_link \
+  source_zone_enabled:=True \
+  source_zone_min_xyz:='[0.20, -0.30, -0.39]' \
+  source_zone_max_xyz:='[0.40, -0.08, -0.25]'
+```
+
+边界坐标使用 `output_frame`；如果 `output_frame` 为空，则使用相机位姿坐标系。
+实际启用时应选择 `base_link` 这类固定坐标系。判断点是应用 `tag_to_object` 后的
+物体中心，并且三个轴都包含边界，即 `min_xyz[i] <= center[i] <= max_xyz[i]`。
+`source_zone_enabled` 默认是 `False`，通用实机 launch 不会强加仿真工作站的
+范围。物体被放到 AABB 之外后，后续 `/get_objects` 不再把它当成新任务；
+`/get_object_pose` 不受这个门控影响，当前任务仍可按正常的位姿 TTL 和观测更新
+规则查询它。
 
 ## FoundationPose 与 SAM 如何保留
 

@@ -81,3 +81,18 @@ def compose_pose(
     position = px + rotated[0], py + rotated[1], pz + rotated[2]
     orientation = quaternion_multiply(parent_orientation, child_orientation)
     return position, orientation
+
+
+def transform_pose_to_target(
+    target_from_source_position: Iterable[float],
+    target_from_source_orientation: Iterable[float],
+    source_from_object_position: Iterable[float],
+    source_from_object_orientation: Iterable[float],
+) -> Tuple[Vector3, Quaternion]:
+    """Return ``target_T_object = target_T_source * source_T_object``."""
+    return compose_pose(
+        target_from_source_position,
+        target_from_source_orientation,
+        source_from_object_position,
+        source_from_object_orientation,
+    )

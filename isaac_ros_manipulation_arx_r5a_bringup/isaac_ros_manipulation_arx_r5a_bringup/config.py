@@ -14,12 +14,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Validated workcell calibration configuration helpers."""
+"""Validated workcell and behavior-tree configuration helpers."""
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
 
+from isaac_ros_manipulation_arx_r5a_apriltag.frame_policy import resolve_pose_frame
 from isaac_ros_manipulation_arx_r5a_apriltag.pose_math import normalize_quaternion
 
 import yaml
@@ -79,3 +80,49 @@ def load_camera_calibration(path: str) -> CameraCalibration:
         translation=translation,
         rotation=rotation,
     )
+
+
+def load_behavior_tree_pose_frame(path: str) -> str:
+    """Load the frame in which the behavior tree interprets GetObjectPose."""
+    config_path = Path(path)
+    if not config_path.is_file():
+        raise FileNotFoundError(f'Behavior-tree config file not found: {config_path}')
+    with config_path.open('r', encoding='utf-8') as config_file:
+        raw = yaml.safe_load(config_file)
+
+    try:
+        camera_frame = raw['behavior_tree_params'][
+            'multi_object_pick_and_place'
+        ]['pose_estimation']['camera_frame_id']
+    except (KeyError, TypeError) as error:
+        raise ValueError(
+            'Behavior-tree config must define '
+            'behavior_tree_params.multi_object_pick_and_place.'
+            'pose_estimation.camera_frame_id'
+        ) from error
+    if not isinstance(camera_frame, str) or not camera_frame.strip():
+        raise ValueError(
+            'Behavior-tree pose_estimation.camera_frame_id must be a non-empty string'
+        )
+    return camera_frame.strip()
+
+
+def validate_behavior_tree_pose_frame(
+    behavior_tree_config_path: str,
+    image_frame: str,
+    output_frame: str = '',
+) -> str:
+    """Require the headerless GetObjectPose producer and consumer frames to match."""
+    pose_frame = resolve_pose_frame(image_frame, output_frame).pose_frame
+    behavior_pose_frame = load_behavior_tree_pose_frame(
+        behavior_tree_config_path
+    )
+    if behavior_pose_frame != pose_frame:
+        raise ValueError(
+            'AprilTag object-server pose frame '
+            f'{pose_frame!r} does not match behavior-tree '
+            'pose_estimation.camera_frame_id '
+            f'{behavior_pose_frame!r} in {behavior_tree_config_path!r}. '
+            'GetObjectPose has no Header, so these values must be identical.'
+        )
+    return pose_frame

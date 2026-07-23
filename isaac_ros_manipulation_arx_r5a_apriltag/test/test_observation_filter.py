@@ -16,7 +16,7 @@
 
 """Tests for dependency-free AprilTag observation filtering."""
 
-from math import sqrt
+from math import cos, radians, sin, sqrt
 
 from isaac_ros_manipulation_arx_r5a_apriltag.observation_filter import (
     axis_aligned_bbox,
@@ -64,6 +64,23 @@ def test_translation_jump_resets_stability_window():
     assert reacquired.stable_pose is not None
 
 
+def test_slow_translation_drift_cannot_pass_the_full_window_gate():
+    """Small adjacent steps must not hide a large whole-window displacement."""
+    pose_filter = StablePoseFilter(
+        min_stable_frames=5,
+        max_translation_jump_m=0.02,
+    )
+    identity = (0.0, 0.0, 0.0, 1.0)
+
+    updates = [
+        pose_filter.update(4, (position, 0.0, 0.1), identity)
+        for position in (0.0, 0.019, 0.038, 0.057, 0.076)
+    ]
+
+    assert any(update.reset for update in updates)
+    assert all(update.stable_pose is None for update in updates)
+
+
 def test_rotation_jump_resets_stability_window():
     """A large orientation jump invalidates the previous stable sequence."""
     pose_filter = StablePoseFilter(
@@ -80,6 +97,27 @@ def test_rotation_jump_resets_stability_window():
     assert jump.stable_pose is None
 
 
+def test_slow_rotation_drift_cannot_pass_the_full_window_gate():
+    """Small adjacent turns must not hide a large whole-window rotation."""
+    pose_filter = StablePoseFilter(
+        min_stable_frames=5,
+        max_translation_jump_m=0.01,
+        max_rotation_jump_deg=5.0,
+    )
+
+    def yaw(degrees):
+        half_angle = radians(degrees) / 2.0
+        return (0.0, 0.0, sin(half_angle), cos(half_angle))
+
+    updates = [
+        pose_filter.update(5, (0.0, 0.0, 0.1), yaw(angle))
+        for angle in (0.0, 4.0, 8.0, 12.0, 16.0)
+    ]
+
+    assert any(update.reset for update in updates)
+    assert all(update.stable_pose is None for update in updates)
+
+
 def test_quaternion_averaging_handles_equivalent_signs():
     """Equivalent q and -q samples do not cancel during quaternion averaging."""
     pose_filter = StablePoseFilter(min_stable_frames=2, max_translation_jump_m=0.01)
@@ -94,3 +132,27 @@ def test_freshness_rejects_old_and_future_stamps():
     assert is_fresh(source_stamp_ns=900, now_ns=1000, ttl_ns=100)
     assert not is_fresh(source_stamp_ns=899, now_ns=1000, ttl_ns=100)
     assert not is_fresh(source_stamp_ns=1001, now_ns=1000, ttl_ns=100)
+
+
+def test_freshness_can_allow_bounded_cross_process_clock_skew():
+    """A configured tolerance accepts only small future timestamp skew."""
+    assert is_fresh(
+        source_stamp_ns=1050,
+        now_ns=1000,
+        ttl_ns=100,
+        future_tolerance_ns=50,
+    )
+    assert not is_fresh(
+        source_stamp_ns=1051,
+        now_ns=1000,
+        ttl_ns=100,
+        future_tolerance_ns=50,
+    )
+
+    with pytest.raises(ValueError, match='future_tolerance_ns'):
+        is_fresh(
+            source_stamp_ns=1000,
+            now_ns=1000,
+            ttl_ns=100,
+            future_tolerance_ns=-1,
+        )

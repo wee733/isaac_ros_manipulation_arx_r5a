@@ -21,9 +21,8 @@ jobs:
       - run: >-
           PYTHONPATH=isaac_ros_manipulation_arx_r5a_apriltag:isaac_ros_manipulation_arx_r5a_bringup
           pytest
-          isaac_ros_manipulation_arx_r5a_apriltag/test/test_observation_filter.py
-          isaac_ros_manipulation_arx_r5a_apriltag/test/test_pose_math.py
-          isaac_ros_manipulation_arx_r5a_apriltag/test/test_tag_config.py
-          isaac_ros_manipulation_arx_r5a_bringup/test/test_calibration_config.py
-          isaac_ros_manipulation_arx_r5a_bringup/test/test_repository_manifests.py
-          isaac_ros_manipulation_arx_r5a_bringup/test/test_workflow_contract.py
+          isaac_ros_manipulation_arx_r5a_apriltag/test
+          isaac_ros_manipulation_arx_r5a_bringup/test
+          --ignore-glob='*/test_copyright.py'
+          --ignore-glob='*/test_flake8.py'
+          --ignore-glob='*/test_pep257.py'

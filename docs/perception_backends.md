@@ -6,13 +6,19 @@ backend is replaceable if it provides:
 | Interface | Purpose |
 |---|---|
 | `GetObjects` action at `/get_objects` | Stable object IDs, 2D boxes, class IDs and confidence |
-| `GetObjectPose` action at `/get_object_pose` | Object pose in the configured camera frame |
+| `GetObjectPose` action at `/get_object_pose` | Object pose in the configured producer frame |
 | `AddMeshToObject` service | Associate an object ID with its mesh |
 | `AssignNameToObject` service | Associate an object ID with its TF frame name |
 | `ClearObjects` service | Clear backend state when requested |
 
 The upstream ObjectSelection server continues to provide
 `/get_selected_object`.
+
+`GetObjectPose.Result.object_pose` has no header. The producer's pose frame must
+therefore exactly match the behavior tree's
+`pose_estimation.camera_frame_id`. The AprilTag adapter uses its camera frame by
+default, or `output_frame` when one is configured; the generic launch validates
+this contract before starting the local adapter with the orchestrator.
 
 The AprilTag backend is the initial implementation. A later FoundationPose +
 RT-DETR or SAM/SAM2 backend can be launched beside this repository and selected

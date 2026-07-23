@@ -109,12 +109,19 @@ def rotation_distance_deg(lhs: Iterable[float], rhs: Iterable[float]) -> float:
     return degrees(2.0 * acos(min(1.0, dot_product)))
 
 
-def is_fresh(source_stamp_ns: int, now_ns: int, ttl_ns: int) -> bool:
-    """Return whether a source timestamp is no older than the configured TTL."""
+def is_fresh(
+    source_stamp_ns: int,
+    now_ns: int,
+    ttl_ns: int,
+    future_tolerance_ns: int = 0,
+) -> bool:
+    """Return whether a timestamp is inside the configured age window."""
     if ttl_ns < 0:
         raise ValueError('ttl_ns must be non-negative')
+    if future_tolerance_ns < 0:
+        raise ValueError('future_tolerance_ns must be non-negative')
     age_ns = int(now_ns) - int(source_stamp_ns)
-    return 0 <= age_ns <= ttl_ns
+    return -int(future_tolerance_ns) <= age_ns <= int(ttl_ns)
 
 
 def _mean_pose(samples: Sequence[PoseEstimate]) -> PoseEstimate:
@@ -138,7 +145,7 @@ def _mean_pose(samples: Sequence[PoseEstimate]) -> PoseEstimate:
 
 
 class StablePoseFilter:
-    """Require consecutive low-jump observations before exposing a pose."""
+    """Require a compact window of observations before exposing a pose."""
 
     def __init__(
         self,
@@ -173,19 +180,32 @@ class StablePoseFilter:
         )
 
         reset = False
-        translation_jump = history and (
-            translation_distance(history[-1].position, sample.position) >
-            self._max_translation_jump_m
+        history.append(sample)
+        window = tuple(history)
+        translation_spread = max(
+            (
+                translation_distance(left.position, right.position)
+                for index, left in enumerate(window)
+                for right in window[index + 1:]
+            ),
+            default=0.0,
         )
-        rotation_jump = history and (
-            rotation_distance_deg(history[-1].orientation, sample.orientation) >
-            self._max_rotation_jump_deg
+        rotation_spread = max(
+            (
+                rotation_distance_deg(left.orientation, right.orientation)
+                for index, left in enumerate(window)
+                for right in window[index + 1:]
+            ),
+            default=0.0,
         )
-        if translation_jump or rotation_jump:
+        if (
+            translation_spread > self._max_translation_jump_m or
+            rotation_spread > self._max_rotation_jump_deg
+        ):
             history.clear()
+            history.append(sample)
             reset = True
 
-        history.append(sample)
         if len(history) < self._min_stable_frames:
             return FilterUpdate(stable_pose=None, reset=reset)
         return FilterUpdate(stable_pose=_mean_pose(tuple(history)), reset=reset)

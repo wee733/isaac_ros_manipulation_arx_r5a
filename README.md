@@ -93,10 +93,28 @@ for this release, including the ARX R5 ROS 2 driver and message packages.
 This is a community integration and the supplied poses are calibration seeds,
 not safe commands for an arbitrary workcell. Keep an emergency stop available
 and progress through perception-only, TF inspection, plan-only, gripper test,
-low-speed single pick, and only then continuous operation. The repository has
-21 passing ROS package tests plus an AprilTag-to-object action integration
-test; final collision geometry, grasp offsets, and autonomous motion still
-require validation on each physical cell.
+low-speed single pick, and only then continuous operation. The package suites
+cover the AprilTag adapter, launch/configuration contracts, and ROS lint checks.
+Final collision geometry, grasp offsets, and autonomous motion still require
+validation on each physical cell.
+
+Both fixed eye-to-hand and moving eye-in-hand camera layouts are supported by
+the pose adapter. When a distinct output frame is configured, it requests the
+TF at the image's original timestamp and drops the observation if that exact
+transform is unavailable; it never falls back to the latest TF. Because
+`GetObjectPose` has no header, `output_frame` (or the camera frame when it is
+empty) must exactly match
+`behavior_tree_params.multi_object_pick_and_place.pose_estimation.camera_frame_id`.
+The generic launch checks this contract when it starts the local adapter with
+the orchestrator. For a moving eye-in-hand camera, use a frame fixed to the
+planning world, normally `base_link`. This timestamp/frame policy is covered by
+source and launch-contract tests, but the complete physical D455 eye-in-hand
+workflow has not yet been validated.
+
+For backward-compatible parameter names, `max_translation_jump_m` and
+`max_rotation_jump_deg` now bound the maximum pairwise translation and rotation
+spread across the complete `min_stable_frames` window, not only the jump between
+adjacent observations. Slow drift therefore cannot satisfy the stability gate.
 
 ## Run
 
@@ -123,6 +141,44 @@ ros2 action send_goal --feedback /multi_object_pick_and_place \
   isaac_ros_manipulation_interfaces/action/MultiObjectPickAndPlace \
   '{mode: 0, target_poses: {header: {frame_id: "base_link"}, poses: [{position: {x: 0.30, y: -0.15, z: 0.20}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}]}, class_ids: []}'
 ```
+
+### Optional source-zone discovery gate
+
+The official multi-object behavior tree continuously looks for more objects.
+For a source-to-destination workflow, the AprilTag adapter can therefore limit
+only `/get_objects` discovery to an inclusive XYZ axis-aligned bounding box:
+
+The example below returns poses in `base_link`. First copy the supplied
+behavior-tree YAML to a workcell-specific file and make its pose frame match:
+
+```yaml
+behavior_tree_params:
+  multi_object_pick_and_place:
+    pose_estimation:
+      base_frame_id: base_link
+      camera_frame_id: base_link
+```
+
+```bash
+ros2 launch isaac_ros_manipulation_arx_r5a_bringup \
+  arx_r5a_apriltag_pick_and_place.launch.py \
+  behavior_tree_config_file:=/absolute/path/to/base_frame_behavior_tree.yaml \
+  output_frame:=base_link \
+  source_zone_enabled:=True \
+  source_zone_min_xyz:='[0.20, -0.30, -0.39]' \
+  source_zone_max_xyz:='[0.40, -0.08, -0.25]'
+```
+
+The bounds are expressed in `output_frame` (or the camera pose frame when
+`output_frame` is empty), so a fixed frame such as `base_link` should be used
+for this gate. The tested point is the object center after `tag_to_object` has
+been applied, and each boundary is inclusive: `min_xyz[i] <= center[i] <=
+max_xyz[i]`. `source_zone_enabled` defaults to `False`; the generic real-robot
+launch does not impose workcell-specific bounds. An object that moves outside
+the box is omitted from later `/get_objects` results, preventing the continuous
+tree from treating the placed object as a new task. `/get_object_pose` is not
+filtered by this gate, so it remains available to the task already in progress
+subject to the normal pose TTL and observation updates.
 
 ## Perception extension point
 

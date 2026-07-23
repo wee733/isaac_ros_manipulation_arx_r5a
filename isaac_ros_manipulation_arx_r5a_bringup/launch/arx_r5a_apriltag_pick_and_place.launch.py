@@ -20,7 +20,10 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from isaac_ros_manipulation_arx_r5a_apriltag.tag_config import load_tag_map
-from isaac_ros_manipulation_arx_r5a_bringup.config import load_camera_calibration
+from isaac_ros_manipulation_arx_r5a_bringup.config import (
+    load_camera_calibration,
+    validate_behavior_tree_pose_frame,
+)
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
@@ -29,6 +32,7 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import LoadComposableNodes, Node
 from launch_ros.descriptions import ComposableNode
 from launch_ros.substitutions import FindPackageShare
+import yaml
 
 
 PACKAGE_NAME = 'isaac_ros_manipulation_arx_r5a_bringup'
@@ -47,6 +51,20 @@ def _bool(context, name: str) -> bool:
     if value in ('false', '0', 'no', 'off'):
         return False
     raise ValueError(f'Launch argument {name} must be a boolean, got {value!r}')
+
+
+def _xyz(context, name: str):
+    values = yaml.safe_load(_value(context, name))
+    if not isinstance(values, list) or len(values) != 3:
+        raise ValueError(
+            f'Launch argument {name} must be an XYZ list, got {values!r}'
+        )
+    try:
+        return [float(value) for value in values]
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f'Launch argument {name} must contain numeric values'
+        ) from error
 
 
 def _include(package_name: str, relative_path: str, arguments=None):
@@ -160,6 +178,17 @@ def launch_setup(context, *args, **kwargs):
     behavior_tree_config = _value(context, 'behavior_tree_config_file')
     blackboard_config = _value(context, 'blackboard_config_file')
     workspace_config = _value(context, 'nvblox_workspace_file')
+    start_apriltag_object_server = _bool(
+        context, 'start_apriltag_object_server'
+    )
+    start_orchestrator = _bool(context, 'start_orchestrator')
+
+    if start_apriltag_object_server and start_orchestrator:
+        validate_behavior_tree_pose_frame(
+            behavior_tree_config,
+            _value(context, 'camera_optical_frame'),
+            _value(context, 'output_frame'),
+        )
 
     actions = [
         Node(
@@ -189,7 +218,7 @@ def launch_setup(context, *args, **kwargs):
     if _bool(context, 'start_apriltag'):
         actions.append(_get_apriltag_nodes(tag_map.tag_size, tag_map.tag_family, context))
 
-    if _bool(context, 'start_apriltag_object_server'):
+    if start_apriltag_object_server:
         actions.append(Node(
             package='isaac_ros_manipulation_arx_r5a_apriltag',
             executable='apriltag_object_server',
@@ -199,7 +228,17 @@ def launch_setup(context, *args, **kwargs):
                 'tag_config_file': tag_config_file,
                 'detections_topic': _value(context, 'tag_detections_topic'),
                 'expected_camera_frame': _value(context, 'camera_optical_frame'),
+                'output_frame': _value(context, 'output_frame'),
                 'pose_ttl_sec': float(_value(context, 'pose_ttl_sec')),
+                'future_tolerance_sec': float(
+                    _value(context, 'future_tolerance_sec')
+                ),
+                'transform_timeout_sec': float(
+                    _value(context, 'transform_timeout_sec')
+                ),
+                'source_zone_enabled': _bool(context, 'source_zone_enabled'),
+                'source_zone_min_xyz': _xyz(context, 'source_zone_min_xyz'),
+                'source_zone_max_xyz': _xyz(context, 'source_zone_max_xyz'),
                 'min_stable_frames': int(_value(context, 'min_stable_frames')),
                 'min_tag_edge_px': float(_value(context, 'min_tag_edge_px')),
                 'max_translation_jump_m': float(
@@ -328,7 +367,7 @@ def launch_setup(context, *args, **kwargs):
             'pick-and-place requires a measured base_link -> camera_1_link transform.'
         )))
 
-    if _bool(context, 'start_orchestrator'):
+    if start_orchestrator:
         actions.append(_include(
             'isaac_ros_manipulation_pick_and_place',
             'launch/orchestration.launch.py',
@@ -385,14 +424,56 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'camera_optical_frame', default_value='camera_1_color_optical_frame'
         ),
+        DeclareLaunchArgument(
+            'output_frame',
+            default_value='',
+            description=(
+                'Frame for poses returned by the AprilTag object server. An empty '
+                'value preserves camera-frame poses; a distinct frame enables an '
+                'exact-time TF lookup before stable-pose filtering. This must match '
+                'pose_estimation.camera_frame_id in the behavior-tree config.'
+            ),
+        ),
         DeclareLaunchArgument('apriltag_backends', default_value='CUDA'),
         DeclareLaunchArgument('max_tags', default_value='16'),
         DeclareLaunchArgument('tile_size', default_value='4'),
         DeclareLaunchArgument('pose_ttl_sec', default_value='0.5'),
+        DeclareLaunchArgument('future_tolerance_sec', default_value='0.0'),
+        DeclareLaunchArgument('transform_timeout_sec', default_value='0.1'),
+        DeclareLaunchArgument(
+            'source_zone_enabled',
+            default_value='False',
+            description=(
+                'Restrict GetObjects discovery to an XYZ AABB in output_frame. '
+                'GetObjectPose is never gated.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'source_zone_min_xyz',
+            default_value='[0.0, 0.0, 0.0]',
+        ),
+        DeclareLaunchArgument(
+            'source_zone_max_xyz',
+            default_value='[0.0, 0.0, 0.0]',
+        ),
         DeclareLaunchArgument('min_stable_frames', default_value='5'),
         DeclareLaunchArgument('min_tag_edge_px', default_value='40.0'),
-        DeclareLaunchArgument('max_translation_jump_m', default_value='0.02'),
-        DeclareLaunchArgument('max_rotation_jump_deg', default_value='5.0'),
+        DeclareLaunchArgument(
+            'max_translation_jump_m',
+            default_value='0.02',
+            description=(
+                'Maximum pairwise translation spread across the stable-pose '
+                'window.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'max_rotation_jump_deg',
+            default_value='5.0',
+            description=(
+                'Maximum pairwise rotation spread across the stable-pose '
+                'window.'
+            ),
+        ),
         DeclareLaunchArgument('time_dilation_factor', default_value='0.10'),
         DeclareLaunchArgument('time_sync_slop', default_value='0.10'),
         DeclareLaunchArgument('robot_mask_distance_threshold', default_value='0.05'),

@@ -18,6 +18,7 @@ from math import sqrt
 
 from isaac_ros_manipulation_arx_r5a_apriltag.pose_math import compose_pose
 from isaac_ros_manipulation_arx_r5a_apriltag.pose_math import rotate_vector
+from isaac_ros_manipulation_arx_r5a_apriltag.pose_math import transform_pose_to_target
 import pytest
 
 
@@ -36,3 +37,17 @@ def test_compose_pose_applies_tag_to_object_offset():
     )
     assert position == pytest.approx((0.4, 0.1, 0.275))
     assert orientation == pytest.approx((0.0, 0.0, 0.0, 1.0))
+
+
+def test_transform_pose_uses_target_from_source_before_source_from_object():
+    """A frame transform must left-multiply the camera-relative object pose."""
+    quarter_turn_z = (0.0, 0.0, sqrt(0.5), sqrt(0.5))
+    position, orientation = transform_pose_to_target(
+        (1.0, 0.0, 0.0),
+        quarter_turn_z,
+        (1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+    )
+
+    assert position == pytest.approx((1.0, 1.0, 0.0), abs=1e-7)
+    assert orientation == pytest.approx(quarter_turn_z)
